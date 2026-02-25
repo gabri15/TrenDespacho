@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ArduinoOTA.h>
+#include <PubSubClient.h>
 #include "esp_camera.h"
 #include "credentials.h"
 
@@ -33,13 +34,48 @@ WiFiClient* activeStreamClient = nullptr;
 #define VSYNC_GPIO_NUM    25
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
+#define LED_FLASH_GPIO     4
+
+const char* MQTT_TOPIC_SET = "tren/esp32cam/led/set";
+const char* MQTT_TOPIC_STATE = "tren/esp32cam/led/state";
+const char* MQTT_TOPIC_GET = "tren/esp32cam/led/get";
+const uint32_t MQTT_RECONNECT_MS = 5000;
+const uint32_t MQTT_RESOLVE_MS = 10000;
+
+framesize_t gFrameSize = FRAMESIZE_HQVGA;
+int gJpegQuality = 18;
+
+WiFiClient mqttNetworkClient;
+PubSubClient mqttClient(mqttNetworkClient);
+bool ledOn = false;
+uint32_t lastMqttReconnect = 0;
+uint32_t lastMqttResolve = 0;
+IPAddress mqttResolvedIp;
+bool mqttHostReady = false;
+
+void ensureMqttConnected();
 
 void handleRoot() {
   server.send(200, "text/plain", "ESP32-CAM OK. Usa /capture o /stream.");
 }
 
 void handleCapture() {
-  camera_fb_t* fb = esp_camera_fb_get();
+  if (activeStreamClient != nullptr && activeStreamClient->connected()) {
+    activeStreamClient->stop();
+    activeStreamClient = nullptr;
+    delay(50);
+  }
+
+  camera_fb_t* fb = nullptr;
+  for (int attempt = 0; attempt < 5 && fb == nullptr; attempt++) {
+    fb = esp_camera_fb_get();
+    if (!fb) {
+      ArduinoOTA.handle();
+      ensureMqttConnected();
+      mqttClient.loop();
+      delay(30);
+    }
+  }
   if (!fb) {
     server.send(503, "text/plain", "No se pudo capturar imagen");
     return;
@@ -59,10 +95,13 @@ void handleStream() {
     return;
   }
 
+  if (activeStreamClient != nullptr && activeStreamClient->connected()) {
+    server.send(429, "text/plain", "Stream ocupado. Solo un cliente a la vez.");
+    return;
+  }
+
   WiFiClient client = server.client();
   activeStreamClient = &client;
-  const uint32_t streamSessionMs = 5000;
-  const uint32_t streamStart = millis();
   uint32_t lastFrameTime = millis();
 
   client.println("HTTP/1.1 200 OK");
@@ -71,11 +110,11 @@ void handleStream() {
   client.println("Pragma: no-cache");
   client.println("Expires: 0");
   client.println("Access-Control-Allow-Origin: *");
-  client.println("Connection: close");
+  client.println("Connection: keep-alive");
   client.println();
 
   while (client.connected() && !otaInProgress) {
-    if (millis() - streamStart > streamSessionMs) {
+    if (!client.connected()) {
       break;
     }
 
@@ -85,16 +124,25 @@ void handleStream() {
         break;
       }
       ArduinoOTA.handle();
+      ensureMqttConnected();
+      mqttClient.loop();
       yield();
       continue;
     }
 
     size_t written = 0;
+    if (!client.connected()) {
+      esp_camera_fb_return(fb);
+      break;
+    }
+
     client.println("--frame");
     client.println("Content-Type: image/jpeg");
     client.printf("Content-Length: %u\r\n\r\n", fb->len);
     written = client.write(fb->buf, fb->len);
-    client.println();
+    if (written == fb->len) {
+      client.println();
+    }
 
     esp_camera_fb_return(fb);
     
@@ -104,11 +152,63 @@ void handleStream() {
     
     lastFrameTime = millis();
     ArduinoOTA.handle();
+    ensureMqttConnected();
+    mqttClient.loop();
     yield();
   }
 
   client.stop();
   activeStreamClient = nullptr;
+}
+
+void setLed(bool on) {
+  ledOn = on;
+  digitalWrite(LED_FLASH_GPIO, on ? HIGH : LOW);
+
+  if (mqttClient.connected()) {
+    mqttClient.publish(MQTT_TOPIC_STATE, on ? "ON" : "OFF", true);
+  }
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  if (strcmp(topic, MQTT_TOPIC_GET) == 0) {
+    if (mqttClient.connected()) {
+      mqttClient.publish(MQTT_TOPIC_STATE, ledOn ? "ON" : "OFF", true);
+    }
+    return;
+  }
+
+  if (strcmp(topic, MQTT_TOPIC_SET) != 0) {
+    return;
+  }
+
+  bool turnOn = false;
+  if (length == 1 && (payload[0] == '0' || payload[0] == '1')) {
+    turnOn = payload[0] == '1';
+  } else {
+    String message;
+    message.reserve(length);
+    for (unsigned int i = 0; i < length; i++) {
+      message += static_cast<char>(payload[i]);
+    }
+    message.trim();
+    message.toUpperCase();
+
+    if (message == "ON" || message == "TRUE") {
+      turnOn = true;
+    } else if (message == "OFF" || message == "FALSE") {
+      turnOn = false;
+    } else {
+      return;
+    }
+  }
+
+  setLed(turnOn);
+}
+
+void initLed() {
+  pinMode(LED_FLASH_GPIO, OUTPUT);
+  setLed(false);
 }
 
 bool initCamera() {
@@ -133,14 +233,21 @@ bool initCamera() {
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
+  config.grab_mode = CAMERA_GRAB_LATEST;
 
   if (psramFound()) {
-    config.frame_size = FRAMESIZE_HQVGA;  // 240x176 para mejor FPS
-    config.jpeg_quality = 18;              // Mayor = peor calidad pero más rápido
+    gFrameSize = FRAMESIZE_HQVGA;  // 240x176 para mejor FPS
+    gJpegQuality = 18;             // Mayor = peor calidad pero más rápido
+    config.fb_location = CAMERA_FB_IN_PSRAM;
+    config.frame_size = gFrameSize;
+    config.jpeg_quality = gJpegQuality;
     config.fb_count = 2;
   } else {
-    config.frame_size = FRAMESIZE_QQVGA;  // 160x120 sin PSRAM
-    config.jpeg_quality = 20;
+    gFrameSize = FRAMESIZE_QQVGA;  // 160x120 sin PSRAM
+    gJpegQuality = 20;
+    config.fb_location = CAMERA_FB_IN_DRAM;
+    config.frame_size = gFrameSize;
+    config.jpeg_quality = gJpegQuality;
     config.fb_count = 1;
   }
 
@@ -153,7 +260,7 @@ bool initCamera() {
   sensor_t* sensor = esp_camera_sensor_get();
   if (sensor != nullptr) {
     sensor->set_vflip(sensor, 1);
-    sensor->set_framesize(sensor, FRAMESIZE_HQVGA);
+    sensor->set_framesize(sensor, gFrameSize);
   }
 
   return true;
@@ -211,6 +318,73 @@ void initOTA() {
   Serial.println("OTA listo");
 }
 
+void initMqtt() {
+  mqttClient.setCallback(mqttCallback);
+}
+
+bool resolveMqttHost() {
+  if (MQTT_USE_IP) {
+    mqttResolvedIp = IPAddress(MQTT_HOST_IP[0], MQTT_HOST_IP[1], MQTT_HOST_IP[2], MQTT_HOST_IP[3]);
+    mqttClient.setServer(mqttResolvedIp, MQTT_PORT);
+    mqttHostReady = true;
+    return true;
+  }
+
+  if (mqttHostReady) {
+    return true;
+  }
+
+  uint32_t now = millis();
+  if (now - lastMqttResolve < MQTT_RESOLVE_MS) {
+    return false;
+  }
+  lastMqttResolve = now;
+
+  if (WiFi.hostByName(MQTT_HOST, mqttResolvedIp)) {
+    mqttClient.setServer(mqttResolvedIp, MQTT_PORT);
+    mqttHostReady = true;
+    Serial.printf("MQTT host resuelto: %s -> %s\n", MQTT_HOST, mqttResolvedIp.toString().c_str());
+    return true;
+  }
+
+  Serial.println("No se pudo resolver MQTT host");
+  return false;
+}
+
+void ensureMqttConnected() {
+  if (mqttClient.connected()) {
+    return;
+  }
+
+  if (!resolveMqttHost()) {
+    return;
+  }
+
+  uint32_t now = millis();
+  if (now - lastMqttReconnect < MQTT_RECONNECT_MS) {
+    return;
+  }
+  lastMqttReconnect = now;
+
+  String clientId = "esp32-cam-tren-" + String(static_cast<uint32_t>(ESP.getEfuseMac()), HEX);
+  bool connected = false;
+
+  if (strlen(MQTT_USER) > 0) {
+    connected = mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASS, MQTT_TOPIC_STATE, 1, true, "OFFLINE");
+  } else {
+    connected = mqttClient.connect(clientId.c_str(), MQTT_TOPIC_STATE, 1, true, "OFFLINE");
+  }
+
+  if (connected) {
+    mqttClient.subscribe(MQTT_TOPIC_SET);
+    mqttClient.subscribe(MQTT_TOPIC_GET);
+    mqttClient.publish(MQTT_TOPIC_STATE, ledOn ? "ON" : "OFF", true);
+    Serial.println("MQTT conectado");
+  } else {
+    Serial.println("MQTT no disponible, reintentando...");
+  }
+}
+
 void initHttpServer() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/capture", HTTP_GET, handleCapture);
@@ -231,6 +405,8 @@ void setup() {
   }
 
   initWiFi();
+  initLed();
+  initMqtt();
   initOTA();
   initHttpServer();
 }
@@ -238,4 +414,6 @@ void setup() {
 void loop() {
   ArduinoOTA.handle();
   server.handleClient();
+  ensureMqttConnected();
+  mqttClient.loop();
 }

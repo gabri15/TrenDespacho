@@ -135,6 +135,90 @@
       background: radial-gradient(circle at 30% 30%, #fff, #e0e0e0);
       animation-delay: 1s;
     }
+
+    .controls {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-top: 18px;
+      gap: 8px;
+    }
+
+    .led-toggle {
+      cursor: pointer;
+      padding: 10px 16px;
+      border-radius: 8px;
+      border: 2px solid #111;
+      background: linear-gradient(to bottom, #f1c40f, #d4ac0d);
+      color: #111;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.35);
+    }
+
+    .led-toggle.on {
+      background: linear-gradient(to bottom, #7bed9f, #2ecc71);
+    }
+
+    .led-status {
+      font-size: 0.85em;
+      color: #eaeaea;
+    }
+
+    .modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+
+    .modal.show {
+      display: flex;
+    }
+
+    .modal-card {
+      background: #1b1b1b;
+      border: 2px solid #333;
+      border-radius: 12px;
+      padding: 18px 20px;
+      max-width: 360px;
+      text-align: center;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+    }
+
+    .modal-title {
+      margin: 0 0 8px;
+      font-size: 1.1em;
+      color: #ffd700;
+    }
+
+    .modal-text {
+      margin: 0 0 14px;
+      font-size: 0.9em;
+      color: #eaeaea;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+    }
+
+    .modal-btn {
+      cursor: pointer;
+      border: 2px solid #111;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-weight: bold;
+      background: linear-gradient(to bottom, #f1c40f, #d4ac0d);
+      color: #111;
+    }
     
     @keyframes blink {
       0% { opacity: 1; box-shadow: 0 0 20px rgba(255, 215, 0, 0.6); }
@@ -222,19 +306,55 @@
         <div class="light white"></div>
         <div class="light yellow"></div>
       </div>
+
+      <div class="controls">
+        <button id="ledToggle" class="led-toggle" type="button">Encender luz</button>
+        <div id="ledStatus" class="led-status">Luz: OFF</div>
+      </div>
       
       <div class="bumper"></div>
     </div>
   </div>
 
+  <div id="streamModal" class="modal" aria-hidden="true">
+    <div class="modal-card">
+      <h3 class="modal-title">Stream no disponible</h3>
+      <p id="streamModalText" class="modal-text"></p>
+      <div class="modal-actions">
+        <button id="streamRetry" class="modal-btn" type="button">Reintentar</button>
+        <button id="streamClose" class="modal-btn" type="button">Cerrar</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const cam = document.getElementById('cam');
+    const ledToggle = document.getElementById('ledToggle');
+    const ledStatus = document.getElementById('ledStatus');
+    const streamModal = document.getElementById('streamModal');
+    const streamModalText = document.getElementById('streamModalText');
+    const streamRetry = document.getElementById('streamRetry');
+    const streamClose = document.getElementById('streamClose');
     const CAMERA_IP = '192.168.0.100';
+    const MQTT_HOST = 'mqtt-dashboard.com';
+    const MQTT_WS_PORT = 8884;
+    const MQTT_CLIENT_ID = 'vamosZidane';
+    const MQTT_WS_PATH = '/mqtt';
+    const MQTT_TOPIC_SET = 'tren/esp32cam/led/set';
+    const MQTT_TOPIC_STATE = 'tren/esp32cam/led/state';
+    const MQTT_TOPIC_GET = 'tren/esp32cam/led/get';
     const STREAM_RECONNECT_MS = 5500;
-    const FREEZE_TIMEOUT_MS = 3000;
+    const RECONNECT_DELAY_MS = 1200;
     let reconnectTimer = null;
-    let freezeWatchdog = null;
-    let lastUpdate = Date.now();
+    let mqttClient = null;
+    let ledState = false;
+    let mqttReady = false;
+    let reconnectInFlight = false;
+    let streamPaused = false;
+    const IS_FILE_PROTOCOL = window.location.protocol === 'file:';
+    const PAHO_CDN_URLS = [
+      'https://cdn.jsdelivr.net/npm/paho-mqtt@1.0.3/mqttws31.min.js'
+    ];
 
     function streamUrl() {
       return `http://${CAMERA_IP}/stream?t=${Date.now()}`;
@@ -242,47 +362,164 @@
 
     function reconnect() {
       console.log('Reconectando stream...');
-      cam.src = streamUrl();
+      cam.src = '';
+      setTimeout(() => {
+        cam.src = streamUrl();
+      }, 50);
     }
 
     function scheduleReconnect() {
+      if (streamPaused) {
+        return;
+      }
+      if (reconnectInFlight) {
+        return;
+      }
+      reconnectInFlight = true;
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
       }
       reconnectTimer = setTimeout(() => {
+        reconnectInFlight = false;
         reconnect();
-        scheduleReconnect();
-      }, STREAM_RECONNECT_MS);
+      }, RECONNECT_DELAY_MS);
     }
 
-    function startFreezeWatchdog() {
-      if (freezeWatchdog) {
-        clearInterval(freezeWatchdog);
-      }
-      freezeWatchdog = setInterval(() => {
-        if (Date.now() - lastUpdate > FREEZE_TIMEOUT_MS) {
-          console.warn('Stream congelado, reconectando...');
-          reconnect();
-          scheduleReconnect();
+    function updateLedUi(on, source) {
+      ledState = on;
+      ledToggle.classList.toggle('on', on);
+      ledToggle.textContent = on ? 'Apagar luz' : 'Encender luz';
+      ledStatus.textContent = `Luz: ${on ? 'ON' : 'OFF'}${source ? ` (${source})` : ''}`;
+    }
+
+    function showStreamModal(message) {
+      streamModalText.textContent = message;
+      streamModal.classList.add('show');
+      streamModal.setAttribute('aria-hidden', 'false');
+    }
+
+    function hideStreamModal() {
+      streamModal.classList.remove('show');
+      streamModal.setAttribute('aria-hidden', 'true');
+    }
+
+    function loadPahoScript() {
+      return new Promise((resolve, reject) => {
+        let index = 0;
+
+        function tryNext() {
+          if (index >= PAHO_CDN_URLS.length) {
+            reject(new Error('No se pudo cargar Paho MQTT'));
+            return;
+          }
+          const script = document.createElement('script');
+          script.src = PAHO_CDN_URLS[index];
+          script.async = true;
+          script.onload = () => resolve();
+          script.onerror = () => {
+            index += 1;
+            tryNext();
+          };
+          document.head.appendChild(script);
         }
-      }, 1000);
+
+        tryNext();
+      });
     }
 
-    // Detectar cuando la imagen se actualiza
-    cam.addEventListener('load', () => {
-      lastUpdate = Date.now();
+    function connectMqtt() {
+      mqttClient = new Paho.MQTT.Client(MQTT_HOST, MQTT_WS_PORT, MQTT_WS_PATH, MQTT_CLIENT_ID);
+
+      mqttClient.onConnectionLost = (response) => {
+        mqttReady = false;
+        ledStatus.textContent = response && response.errorMessage
+          ? `MQTT desconectado: ${response.errorMessage}`
+          : 'MQTT desconectado';
+      };
+
+      mqttClient.onMessageArrived = (message) => {
+        if (message.destinationName !== MQTT_TOPIC_STATE) {
+          return;
+        }
+        const payload = String(message.payloadString).trim().toUpperCase();
+        if (payload === 'ON') {
+          updateLedUi(true, 'MQTT');
+        } else if (payload === 'OFF') {
+          updateLedUi(false, 'MQTT');
+        }
+      };
+
+      mqttClient.connect({
+        useSSL: true,
+        cleanSession: true,
+        onSuccess: () => {
+          mqttReady = true;
+          mqttClient.subscribe(MQTT_TOPIC_STATE);
+          const message = new Paho.MQTT.Message('STATE');
+          message.destinationName = MQTT_TOPIC_GET;
+          mqttClient.send(message);
+          ledStatus.textContent = 'MQTT conectado';
+        },
+        onFailure: (error) => {
+          mqttReady = false;
+          ledStatus.textContent = error && error.errorMessage
+            ? `MQTT error: ${error.errorMessage}`
+            : 'MQTT error';
+          console.error('MQTT connect error', error);
+          setTimeout(connectMqtt, 4000);
+        }
+      });
+    }
+
+    let lastErrorTime = 0;
+
+    // Reconectar si hay error, con enfriamiento para evitar loops
+    cam.addEventListener('error', () => {
+      const now = Date.now();
+      if (now - lastErrorTime < 10000) {
+        return;
+      }
+      lastErrorTime = now;
+      streamPaused = true;
+      showStreamModal('El stream esta ocupado o la conexion se corto. Cierra otras pestañas y pulsa Reintentar.');
+      scheduleReconnect();
     });
 
-    // Reconectar inmediatamente si hay error
-    cam.addEventListener('error', () => {
-      console.error('Error cargando stream, reconectando...');
-      setTimeout(reconnect, 500);
+    streamRetry.addEventListener('click', () => {
+      streamPaused = false;
+      hideStreamModal();
+      reconnect();
     });
+
+    streamClose.addEventListener('click', () => {
+      hideStreamModal();
+    });
+
+    ledToggle.addEventListener('click', () => {
+      if (!mqttClient || !mqttReady) {
+        ledStatus.textContent = 'MQTT no conectado';
+        return;
+      }
+      const nextState = !ledState;
+      const message = new Paho.MQTT.Message(nextState ? 'ON' : 'OFF');
+      message.destinationName = MQTT_TOPIC_SET;
+      mqttClient.send(message);
+      updateLedUi(nextState, 'Web');
+    });
+
+    if (IS_FILE_PROTOCOL) {
+      ledStatus.textContent = 'MQTT no disponible (abre con servidor HTTP)';
+    }
 
     // Iniciar stream automáticamente
     reconnect();
-    scheduleReconnect();
-    startFreezeWatchdog();
+    if (!IS_FILE_PROTOCOL) {
+      loadPahoScript()
+        .then(() => connectMqtt())
+        .catch(() => {
+          ledStatus.textContent = 'MQTT no disponible';
+        });
+    }
   </script>
 </body>
 </html>
