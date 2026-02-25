@@ -485,6 +485,13 @@
       scheduleReconnect();
     });
 
+    cam.addEventListener('load', () => {
+      if (streamPaused) {
+        streamPaused = false;
+        hideStreamModal();
+      }
+    });
+
     streamRetry.addEventListener('click', () => {
       streamPaused = false;
       hideStreamModal();
@@ -506,6 +513,18 @@
       mqttClient.send(message);
       updateLedUi(nextState, 'Web');
     });
+
+    function stopStream() {
+      cam.src = '';
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(`http://${CAMERA_IP}/stop`);
+      } else {
+        fetch(`http://${CAMERA_IP}/stop`, { method: 'POST', keepalive: true }).catch(() => {});
+      }
+    }
+
+    window.addEventListener('pagehide', stopStream);
+    window.addEventListener('beforeunload', stopStream);
 
     if (IS_FILE_PROTOCOL) {
       ledStatus.textContent = 'MQTT no disponible (abre con servidor HTTP)';

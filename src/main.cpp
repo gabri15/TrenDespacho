@@ -89,6 +89,17 @@ void handleCapture() {
   esp_camera_fb_return(fb);
 }
 
+void handleStopStream() {
+  if (activeStreamClient != nullptr && activeStreamClient->connected()) {
+    activeStreamClient->stop();
+    activeStreamClient = nullptr;
+    server.send(200, "text/plain", "Stream detenido");
+    return;
+  }
+
+  server.send(204, "text/plain", "Sin stream activo");
+}
+
 void handleStream() {
   if (otaInProgress) {
     server.send(503, "text/plain", "OTA en progreso. Stream pausado.");
@@ -389,6 +400,7 @@ void initHttpServer() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/capture", HTTP_GET, handleCapture);
   server.on("/stream", HTTP_GET, handleStream);
+  server.on("/stop", HTTP_POST, handleStopStream);
   server.begin();
   Serial.println("Servidor HTTP listo");
 }
