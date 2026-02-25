@@ -18,12 +18,15 @@
       width: min(100vw, 900px);
       padding: 16px;
       box-sizing: border-box;
+      text-align: center;
     }
     img {
+      max-width: 480px;
       width: 100%;
       height: auto;
       border: 1px solid #333;
       background: #000;
+      image-rendering: crisp-edges;
     }
   </style>
 </head>
@@ -36,27 +39,59 @@
   <script>
     const cam = document.getElementById('cam');
     const CAMERA_IP = '192.168.0.100';
-    const STREAM_RECONNECT_MS = 9000;
+    const STREAM_RECONNECT_MS = 5500;
+    const FREEZE_TIMEOUT_MS = 3000;
     let reconnectTimer = null;
+    let freezeWatchdog = null;
+    let lastUpdate = Date.now();
 
     function streamUrl() {
       return `http://${CAMERA_IP}/stream?t=${Date.now()}`;
+    }
+
+    function reconnect() {
+      console.log('Reconectando stream...');
+      cam.src = streamUrl();
     }
 
     function scheduleReconnect() {
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
       }
-
       reconnectTimer = setTimeout(() => {
-        cam.src = streamUrl();
+        reconnect();
         scheduleReconnect();
       }, STREAM_RECONNECT_MS);
     }
 
+    function startFreezeWatchdog() {
+      if (freezeWatchdog) {
+        clearInterval(freezeWatchdog);
+      }
+      freezeWatchdog = setInterval(() => {
+        if (Date.now() - lastUpdate > FREEZE_TIMEOUT_MS) {
+          console.warn('Stream congelado, reconectando...');
+          reconnect();
+          scheduleReconnect();
+        }
+      }, 1000);
+    }
+
+    // Detectar cuando la imagen se actualiza
+    cam.addEventListener('load', () => {
+      lastUpdate = Date.now();
+    });
+
+    // Reconectar inmediatamente si hay error
+    cam.addEventListener('error', () => {
+      console.error('Error cargando stream, reconectando...');
+      setTimeout(reconnect, 500);
+    });
+
     // Iniciar stream automáticamente
-    cam.src = streamUrl();
+    reconnect();
     scheduleReconnect();
+    startFreezeWatchdog();
   </script>
 </body>
 </html>

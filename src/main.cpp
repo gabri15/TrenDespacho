@@ -61,8 +61,9 @@ void handleStream() {
 
   WiFiClient client = server.client();
   activeStreamClient = &client;
-  const uint32_t streamSessionMs = 8000;
+  const uint32_t streamSessionMs = 5000;
   const uint32_t streamStart = millis();
+  uint32_t lastFrameTime = millis();
 
   client.println("HTTP/1.1 200 OK");
   client.println("Content-Type: multipart/x-mixed-replace; boundary=frame");
@@ -80,21 +81,29 @@ void handleStream() {
 
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) {
+      if (millis() - lastFrameTime > 1000) {
+        break;
+      }
       ArduinoOTA.handle();
-      delay(2);
       yield();
       continue;
     }
 
+    size_t written = 0;
     client.println("--frame");
     client.println("Content-Type: image/jpeg");
     client.printf("Content-Length: %u\r\n\r\n", fb->len);
-    client.write(fb->buf, fb->len);
+    written = client.write(fb->buf, fb->len);
     client.println();
 
     esp_camera_fb_return(fb);
+    
+    if (written != fb->len) {
+      break;
+    }
+    
+    lastFrameTime = millis();
     ArduinoOTA.handle();
-    delay(1);
     yield();
   }
 
@@ -126,12 +135,12 @@ bool initCamera() {
   config.pixel_format = PIXFORMAT_JPEG;
 
   if (psramFound()) {
-    config.frame_size = FRAMESIZE_QVGA;
-    config.jpeg_quality = 14;
+    config.frame_size = FRAMESIZE_HQVGA;  // 240x176 para mejor FPS
+    config.jpeg_quality = 18;              // Mayor = peor calidad pero más rápido
     config.fb_count = 2;
   } else {
-    config.frame_size = FRAMESIZE_QVGA;
-    config.jpeg_quality = 16;
+    config.frame_size = FRAMESIZE_QQVGA;  // 160x120 sin PSRAM
+    config.jpeg_quality = 20;
     config.fb_count = 1;
   }
 
@@ -144,7 +153,7 @@ bool initCamera() {
   sensor_t* sensor = esp_camera_sensor_get();
   if (sensor != nullptr) {
     sensor->set_vflip(sensor, 1);
-    sensor->set_framesize(sensor, FRAMESIZE_QVGA);
+    sensor->set_framesize(sensor, FRAMESIZE_HQVGA);
   }
 
   return true;
