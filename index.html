@@ -3,37 +3,228 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ESP32-CAM Viewer</title>
+  <title>ESP32-CAM Viewer - Locomotora</title>
   <style>
     body {
       margin: 0;
       font-family: Arial, sans-serif;
-      background: #111;
+      background: linear-gradient(to bottom, #1a1a2e, #0f3460);
       color: #eee;
       display: grid;
       place-items: center;
       min-height: 100vh;
+      padding: 20px;
+      box-sizing: border-box;
     }
     .panel {
-      width: min(100vw, 900px);
-      padding: 16px;
-      box-sizing: border-box;
+      text-align: center;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    h2 {
+      color: #ffd700;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+      margin-bottom: 30px;
+      font-size: 2em;
+      width: 100%;
       text-align: center;
     }
+    
+    /* Locomotora contenedor */
+    .locomotive {
+      position: relative;
+      width: min(90vw, 300px);
+      background: linear-gradient(to bottom, #c41e3a 0%, #8b0000 100%);
+      border-radius: 20px 20px 0 0;
+      padding: 30px 20px 40px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.7);
+      border: 4px solid #222;
+    }
+    
+    /* Techo de la locomotora */
+    .locomotive::before {
+      content: '';
+      position: absolute;
+      top: -25px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 60%;
+      height: 25px;
+      background: linear-gradient(to right, #8b0000, #c41e3a, #8b0000);
+      border-radius: 10px 10px 0 0;
+      border: 3px solid #333;
+      border-bottom: none;
+    }
+    
+    /* Base de la locomotora */
+    .locomotive::after {
+      content: '';
+      position: absolute;
+      bottom: -20px;
+      left: 0;
+      right: 0;
+      height: 20px;
+      background: linear-gradient(to bottom, #333, #111);
+      border-radius: 0 0 15px 15px;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.9);
+    }
+    
+    /* Marco de la cámara */
+    .camera-frame {
+      position: relative;
+      background: linear-gradient(135deg, #2c3e50, #34495e);
+      padding: 15px;
+      border-radius: 15px;
+      border: 5px solid #1a1a1a;
+      box-shadow: inset 0 0 20px rgba(0,0,0,0.5), 0 5px 15px rgba(0,0,0,0.3);
+    }
+    
+    /* Tornillos decorativos */
+    .camera-frame::before,
+    .camera-frame::after {
+      content: '⊗';
+      position: absolute;
+      color: #666;
+      font-size: 20px;
+      font-weight: bold;
+    }
+    .camera-frame::before {
+      top: 5px;
+      left: 5px;
+    }
+    .camera-frame::after {
+      top: 5px;
+      right: 5px;
+    }
+    
     img {
-      max-width: 480px;
+      display: block;
+      max-width: 100%;
       width: 100%;
       height: auto;
-      border: 1px solid #333;
+      border: 3px solid #000;
       background: #000;
       image-rendering: crisp-edges;
+      border-radius: 8px;
+    }
+    
+    /* Luces frontales */
+    .lights {
+      display: flex;
+      justify-content: space-around;
+      margin-top: 25px;
+      gap: 10px;
+    }
+    
+    .light {
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      border: 3px solid #222;
+      box-shadow: 0 0 20px rgba(255, 215, 0, 0.6), inset 0 0 10px rgba(255, 255, 255, 0.3);
+      animation: blink 2s infinite alternate;
+    }
+    
+    .light.yellow {
+      background: radial-gradient(circle at 30% 30%, #fff, #ffd700);
+    }
+    
+    .light.white {
+      background: radial-gradient(circle at 30% 30%, #fff, #e0e0e0);
+      animation-delay: 1s;
+    }
+    
+    @keyframes blink {
+      0% { opacity: 1; box-shadow: 0 0 20px rgba(255, 215, 0, 0.6); }
+      100% { opacity: 0.7; box-shadow: 0 0 10px rgba(255, 215, 0, 0.3); }
+    }
+    
+    /* Ventanas laterales */
+    .windows {
+      position: absolute;
+      top: 50%;
+      width: 30px;
+      height: 80px;
+      background: linear-gradient(135deg, #87ceeb, #4682b4);
+      border: 3px solid #1a1a1a;
+      border-radius: 5px;
+      transform: translateY(-50%);
+      box-shadow: inset 0 0 10px rgba(255,255,255,0.3);
+    }
+    
+    .windows.left {
+      left: -35px;
+    }
+    
+    .windows.right {
+      right: -35px;
+    }
+    
+    /* Líneas decorativas */
+    .stripes {
+      position: absolute;
+      top: 15px;
+      left: 20px;
+      right: 20px;
+      height: 3px;
+      background: linear-gradient(to right, transparent, #ffd700, transparent);
+    }
+    
+    .stripes::after {
+      content: '';
+      position: absolute;
+      bottom: -8px;
+      left: 0;
+      right: 0;
+      height: 3px;
+      background: linear-gradient(to right, transparent, #ffd700, transparent);
+    }
+    
+    /* Parachoques inferior */
+    .bumper {
+      position: absolute;
+      bottom: -15px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 80%;
+      height: 10px;
+      background: linear-gradient(to bottom, #888, #333);
+      border-radius: 5px;
+      border: 2px solid #000;
+    }
+    
+    @media (max-width: 650px) {
+      .windows {
+        display: none;
+      }
+      h2 {
+        font-size: 1.5em;
+      }
     }
   </style>
 </head>
 <body>
   <div class="panel">
-    <h2>Cámara ESP32-CAM</h2>
-    <img id="cam" alt="Captura cámara" />
+    <h2>🚂 Cámara Locomotora ESP32-CAM 🚂</h2>
+    <div class="locomotive">
+      <div class="stripes"></div>
+      <div class="windows left"></div>
+      <div class="windows right"></div>
+      
+      <div class="camera-frame">
+        <img id="cam" alt="Vista frontal locomotora" />
+      </div>
+      
+      <div class="lights">
+        <div class="light yellow"></div>
+        <div class="light white"></div>
+        <div class="light yellow"></div>
+      </div>
+      
+      <div class="bumper"></div>
+    </div>
   </div>
 
   <script>
