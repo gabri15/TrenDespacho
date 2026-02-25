@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ESP32-CAM Viewer</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #111;
+      color: #eee;
+      display: grid;
+      place-items: center;
+      min-height: 100vh;
+    }
+    .panel {
+      width: min(100vw, 900px);
+      padding: 16px;
+      box-sizing: border-box;
+    }
+    img {
+      width: 100%;
+      height: auto;
+      border: 1px solid #333;
+      background: #000;
+    }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h2>Cámara ESP32-CAM</h2>
+    <img id="cam" alt="Captura cámara" />
+  </div>
+
+  <script>
+    const cam = document.getElementById('cam');
+    const CAMERA_IP = '192.168.0.100';
+    const STREAM_RECONNECT_MS = 9000;
+    let reconnectTimer = null;
+
+    function streamUrl() {
+      return `http://${CAMERA_IP}/stream?t=${Date.now()}`;
+    }
+
+    function scheduleReconnect() {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+      }
+
+      reconnectTimer = setTimeout(() => {
+        cam.src = streamUrl();
+        scheduleReconnect();
+      }, STREAM_RECONNECT_MS);
+    }
+
+    // Iniciar stream automáticamente
+    cam.src = streamUrl();
+    scheduleReconnect();
+  </script>
+</body>
+</html>
